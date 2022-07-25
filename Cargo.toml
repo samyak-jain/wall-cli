@@ -1,0 +1,19 @@
+[package]
+name = "wallpaper-fade"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+clap = { version = "3.2.14", features = ["derive"] }
+anyhow = "1.0.57"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1.8", features = ["fs"] }
+notify = "5.0.0-pre.15"
+async-stream = "0.3.3"
+dirs = "4.0.0"
+image-transitions = "0.1.0"
+image = "0.24.3"
+pin-utils = "0.1.0"
+wall = "0.2.3"
