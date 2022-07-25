@@ -23,6 +23,21 @@ pub async fn read_directory(directory: &PathBuf) -> anyhow::Result<WallpaperData
     })
 }
 
+pub async fn read_images_from_directory(
+    directory: &PathBuf,
+) -> anyhow::Result<impl Iterator<Item = PathBuf>> {
+    if !directory.is_dir() {
+        bail!("invalid directory: {}, given", directory.display());
+    }
+
+    let image_list = ReadDirStream::new(tokio::fs::read_dir(directory).await?)
+        .filter_map(|entry| Some(entry.ok()?.path()))
+        .collect::<Vec<_>>()
+        .await;
+
+    Ok(image_list.into_iter())
+}
+
 pub async fn watch_dir_changes(
     directory: &PathBuf,
 ) -> anyhow::Result<impl tokio_stream::Stream<Item = StreamEvent>> {

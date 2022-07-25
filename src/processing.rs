@@ -1,18 +1,20 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
-use crate::WallpaperData;
-use image::{io::Reader as ImageReader, ImageBuffer, Rgba};
+use crate::{
+    cache::{save_cache, WallpaperCache},
+    WallpaperData,
+};
+use image::{io::Reader as ImageReader, ImageBuffer};
 use image_transitions::cross_fade;
 
 pub async fn generate_intermediate_wallpapers(
-    wallpapers: WallpaperData,
-    wallpaper_dir: PathBuf,
+    wallpapers: Arc<WallpaperData>,
+    wallpaper_dir: &PathBuf,
     iterations: usize,
 ) -> anyhow::Result<()> {
-    let wallpaper_list = wallpapers.get_all();
-    let mut wallpaper_windows = wallpaper_list.windows(2);
+    let wallpaper_windows = WallpaperCache::new(wallpapers);
 
-    while let Some([first_wallpaper, second_wallpaper]) = wallpaper_windows.next() {
+    for (first_wallpaper, second_wallpaper) in wallpaper_windows.iter() {
         let mut folder_path = wallpaper_dir.clone();
         folder_path.push(format!("{}_{}", first_wallpaper, second_wallpaper));
 
@@ -40,16 +42,16 @@ pub async fn generate_intermediate_wallpapers(
 
         tokio::fs::create_dir(&folder_path).await?;
 
-        for (index, raw_output) in split_buffer.enumerate() {
-            let output_image: ImageBuffer<Rgba<u16>, &[u16]> =
-                ImageBuffer::from_raw(width, height, raw_output)
-                    .ok_or(anyhow::anyhow!("image buffer container not big enough"))?;
+        let images = split_buffer
+            .map(|raw_output| {
+                // TODO: possible remove this allocation
+                ImageBuffer::from_raw(width, height, Vec::from(raw_output))
+                    .ok_or(anyhow::anyhow!("image buffer not big enough"))
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
 
-            let mut output_path = folder_path.clone();
-            output_path.push(index.to_string());
-
-            output_image.save(output_path)?;
-        }
+        save_cache(folder_path, images).await?;
     }
 
     Ok(())

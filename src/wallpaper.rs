@@ -96,8 +96,9 @@ impl WallpaperSetter {
     pub async fn set_many(
         &self,
         paths: impl Iterator<Item = PathBuf>,
-        fps: usize,
+        fps: u16,
     ) -> anyhow::Result<()> {
+        // TODO: calculate time taken to set the wallpaper and subtract it from timeout
         let timeout_in_milliseconds = (1000f32 / fps as f32).floor() as u64;
         let mut interval = time::interval(Duration::from_millis(timeout_in_milliseconds));
 
