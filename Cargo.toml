@@ -13,7 +13,7 @@ tokio-stream = { version = "0.1.8", features = ["fs"] }
 notify = "5.0.0-pre.15"
 async-stream = "0.3.3"
 dirs = "4.0.0"
-image-transitions = "0.1.0"
+image-transitions = "0.1.1"
 image = "0.24.3"
 pin-utils = "0.1.0"
 wall = "0.2.3"

@@ -11,6 +11,7 @@ use wall::xlib::Xlib;
 
 use crate::StreamEvent;
 
+#[derive(Debug)]
 pub struct WallpaperData {
     pub wallpapers: Mutex<BTreeSet<String>>,
 }
@@ -32,51 +33,57 @@ impl WallpaperData {
     }
 }
 
-pub async fn update_wallpapers(
+pub async fn handle_event(
     wallpapers: Arc<WallpaperData>,
-    events: impl tokio_stream::Stream<Item = StreamEvent>,
+    event: StreamEvent,
 ) -> anyhow::Result<()> {
-    // Stream needs to be Unpin
-    pin_utils::pin_mut!(events);
+    let event_data = event?;
+    dbg!(event_data.clone());
+    let paths = event_data.paths;
 
-    while let Some(event) = events.next().await {
-        let event_data = event?;
-        let paths = event_data.paths;
+    let get_name = |path: Option<&PathBuf>, path_type: &str| -> anyhow::Result<String> {
+        Ok(path
+            .ok_or(anyhow::anyhow!("no {} available", path_type))?
+            .file_name()
+            .ok_or(anyhow::anyhow!("no filename available for {}", path_type))?
+            .to_string_lossy()
+            .into_owned())
+    };
 
-        let get_name = |path: Option<&PathBuf>, path_type: &str| -> anyhow::Result<String> {
-            Ok(path
-                .ok_or(anyhow::anyhow!("no {} available", path_type))?
-                .file_name()
-                .ok_or(anyhow::anyhow!("no filename available for {}", path_type))?
-                .to_string_lossy()
-                .into_owned())
-        };
-
-        match event_data.kind {
-            notify::EventKind::Create(notify::event::CreateKind::File) => paths
+    match event_data.kind {
+        notify::EventKind::Create(notify::event::CreateKind::File) => {
+            paths
                 .into_iter()
                 .filter_map(|entry| get_name(Some(&entry), "add path").ok())
                 .for_each(|name| {
                     wallpapers.insert(name);
-                }),
-            notify::EventKind::Modify(notify::event::ModifyKind::Name(
-                notify::event::RenameMode::Both,
-            )) => {
-                let old_path = get_name(paths.get(0), "old path")?;
-                let new_path = get_name(paths.get(1), "new path")?;
+                });
+            return Ok(());
+        }
+        notify::EventKind::Modify(notify::event::ModifyKind::Name(
+            notify::event::RenameMode::Both,
+        )) => {
+            let old_path = get_name(paths.get(0), "old path")?;
+            let new_path = get_name(paths.get(1), "new path")?;
 
-                wallpapers.remove(&old_path);
-                wallpapers.insert(new_path);
-            }
-            notify::EventKind::Remove(notify::event::RemoveKind::File) => paths
+            // TODO: clear cache
+            wallpapers.remove(&old_path);
+            wallpapers.insert(new_path);
+
+            return Ok(());
+        }
+        notify::EventKind::Remove(notify::event::RemoveKind::File) => {
+            // TODO: clear cache
+            paths
                 .into_iter()
                 .filter_map(|entry| get_name(Some(&entry), "remove path").ok())
                 .for_each(|name| {
                     wallpapers.remove(&name);
-                }),
-            _ => return Ok(()),
-        };
-    }
+                });
+            return Ok(());
+        }
+        _ => {}
+    };
 
     Ok(())
 }

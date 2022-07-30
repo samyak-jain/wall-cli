@@ -1,7 +1,7 @@
 use crate::{StreamEvent, WallpaperData};
 use anyhow::bail;
 use notify::{RecommendedWatcher, Watcher};
-use std::path::PathBuf;
+use std::{collections::BTreeSet, path::PathBuf};
 use tokio::sync::mpsc::unbounded_channel;
 use tokio_stream::{
     wrappers::{ReadDirStream, UnboundedReceiverStream},
@@ -13,13 +13,23 @@ pub async fn read_directory(directory: &PathBuf) -> anyhow::Result<WallpaperData
         bail!("wallpaper_dir is supposed to be a directory")
     }
 
-    let dir_list = ReadDirStream::new(tokio::fs::read_dir(directory).await?)
-        .filter_map(|entry| Some(entry.ok()?.file_name().into_string().ok()?))
-        .collect::<Vec<_>>()
-        .await;
+    let mut wallpapers = BTreeSet::new();
+    let mut file_list = ReadDirStream::new(tokio::fs::read_dir(directory).await?);
+
+    while let Some(Ok(file)) = file_list.next().await {
+        if file.file_type().await?.is_dir() {
+            continue;
+        }
+
+        wallpapers.insert(
+            file.file_name().into_string().map_err(|err| {
+                anyhow::anyhow!("could not covert file name to string: {:?}", err)
+            })?,
+        );
+    }
 
     Ok(WallpaperData {
-        wallpapers: std::sync::Mutex::new(std::collections::BTreeSet::from_iter(dir_list)),
+        wallpapers: std::sync::Mutex::new(wallpapers),
     })
 }
 
@@ -40,7 +50,7 @@ pub async fn read_images_from_directory(
 
 pub async fn watch_dir_changes(
     directory: &PathBuf,
-) -> anyhow::Result<impl tokio_stream::Stream<Item = StreamEvent>> {
+) -> anyhow::Result<tokio::sync::mpsc::UnboundedReceiver<StreamEvent>> {
     if !directory.is_dir() {
         bail!("wallpaper_dir is supposed to be a directory")
     }
@@ -52,5 +62,5 @@ pub async fn watch_dir_changes(
     })?;
     watcher.watch(&directory, notify::RecursiveMode::Recursive)?;
 
-    Ok(UnboundedReceiverStream::new(rx))
+    Ok(rx)
 }

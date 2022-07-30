@@ -8,6 +8,7 @@ use crate::{
     WallpaperImage,
 };
 
+#[derive(Debug)]
 pub struct WallpaperCache {
     wallpaper_pairs: Vec<(String, String)>,
 }
@@ -30,13 +31,11 @@ impl WallpaperCache {
                 .map(|window| {
                     (
                         window
-                            .iter()
-                            .next()
+                            .get(0)
                             .expect("cannot find element in wallpaper window")
                             .clone(),
                         window
-                            .iter()
-                            .next()
+                            .get(1)
                             .expect("cannot find element in wallpaper window")
                             .clone(),
                     )
@@ -45,10 +44,10 @@ impl WallpaperCache {
         }
     }
 
-    pub async fn set_wallpapers(&self, wallpaper_dir: &PathBuf, fps: u16) -> anyhow::Result<()> {
+    pub async fn set_wallpapers(&self, cache_dir: &PathBuf, fps: u16) -> anyhow::Result<()> {
         for pair in &self.wallpaper_pairs {
             let folder_name = format!("{}_{}", pair.0, pair.1);
-            let mut folder_path = wallpaper_dir.clone();
+            let mut folder_path = cache_dir.clone();
             folder_path.push(folder_name);
 
             if !folder_path.exists() {
@@ -65,12 +64,15 @@ impl WallpaperCache {
     }
 }
 
-pub async fn save_cache(folder_path: PathBuf, images: Vec<WallpaperImage>) -> anyhow::Result<()> {
+pub async fn save_cache(
+    folder_path: PathBuf,
+    images: impl Iterator<Item = WallpaperImage<'_>>,
+) -> anyhow::Result<()> {
     if !folder_path.exists() {
         tokio::fs::create_dir(&folder_path).await?;
     }
 
-    for (index, file) in images.iter().enumerate() {
+    for (index, file) in images.enumerate() {
         let mut file_path = folder_path.clone();
         // TODO: How to handle file extensions?
         file_path.push(index.to_string());
