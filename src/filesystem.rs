@@ -3,12 +3,14 @@ use anyhow::bail;
 use notify::{RecommendedWatcher, Watcher};
 use std::{collections::BTreeSet, path::PathBuf};
 use tokio::sync::mpsc::unbounded_channel;
-use tokio_stream::{
-    wrappers::{ReadDirStream, UnboundedReceiverStream},
-    StreamExt,
-};
+use tokio_stream::{wrappers::ReadDirStream, StreamExt};
+use tracing::{debug, info};
 
-pub async fn read_directory(directory: &PathBuf) -> anyhow::Result<WallpaperData> {
+#[tracing::instrument]
+pub async fn read_directory(
+    directory: &PathBuf,
+    resolution: (u32, u32),
+) -> anyhow::Result<WallpaperData> {
     if !directory.is_dir() {
         bail!("wallpaper_dir is supposed to be a directory")
     }
@@ -21,12 +23,28 @@ pub async fn read_directory(directory: &PathBuf) -> anyhow::Result<WallpaperData
             continue;
         }
 
-        wallpapers.insert(
-            file.file_name().into_string().map_err(|err| {
-                anyhow::anyhow!("could not covert file name to string: {:?}", err)
-            })?,
-        );
+        let file_name = file
+            .file_name()
+            .into_string()
+            .map_err(|err| anyhow::anyhow!("could not covert file name to string: {:?}", err))?;
+
+        let image_dimensions = image::io::Reader::open(file.path())?.into_dimensions()?;
+        if image_dimensions < resolution {
+            info!(
+                file_name = file_name,
+                dimensions = format!("{:?}", image_dimensions),
+                "skipping file because dimensions too small"
+            );
+            continue;
+        }
+
+        wallpapers.insert(file_name);
     }
+
+    debug!(
+        wallpaper_list = format!("{:#?}", wallpapers),
+        "list of wallpapers read from the directory"
+    );
 
     Ok(WallpaperData {
         wallpapers: std::sync::Mutex::new(wallpapers),
@@ -35,7 +53,7 @@ pub async fn read_directory(directory: &PathBuf) -> anyhow::Result<WallpaperData
 
 pub async fn read_images_from_directory(
     directory: &PathBuf,
-) -> anyhow::Result<impl Iterator<Item = PathBuf>> {
+) -> anyhow::Result<impl Iterator<Item = PathBuf> + std::fmt::Debug> {
     if !directory.is_dir() {
         bail!("invalid directory: {}, given", directory.display());
     }
@@ -63,4 +81,19 @@ pub async fn watch_dir_changes(
     watcher.watch(&directory, notify::RecursiveMode::Recursive)?;
 
     Ok(rx)
+}
+
+pub async fn validate_directory(
+    path: Option<PathBuf>,
+    alternative: Option<PathBuf>,
+) -> anyhow::Result<PathBuf> {
+    let directory = path
+        .or(alternative.and_then(|alt_dir| Some(alt_dir.join("wall-cli"))))
+        .ok_or(anyhow::anyhow!("cannot get directory"))?;
+
+    if !directory.exists() {
+        tokio::fs::create_dir(&directory).await?;
+    }
+
+    Ok(directory)
 }

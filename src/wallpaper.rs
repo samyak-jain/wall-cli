@@ -1,3 +1,4 @@
+use core::fmt;
 use std::{
     collections::BTreeSet,
     path::PathBuf,
@@ -6,7 +7,7 @@ use std::{
 };
 
 use tokio::time;
-use tokio_stream::StreamExt;
+use tracing::info;
 use wall::xlib::Xlib;
 
 use crate::StreamEvent;
@@ -33,6 +34,7 @@ impl WallpaperData {
     }
 }
 
+#[tracing::instrument]
 pub async fn handle_event(
     wallpapers: Arc<WallpaperData>,
     event: StreamEvent,
@@ -56,6 +58,7 @@ pub async fn handle_event(
                 .into_iter()
                 .filter_map(|entry| get_name(Some(&entry), "add path").ok())
                 .for_each(|name| {
+                    info!(path = name, "new file added");
                     wallpapers.insert(name);
                 });
             return Ok(());
@@ -66,17 +69,23 @@ pub async fn handle_event(
             let old_path = get_name(paths.get(0), "old path")?;
             let new_path = get_name(paths.get(1), "new path")?;
 
-            // TODO: clear cache
+            info!(old_path = old_path, new_path = new_path, "renaming");
+
             wallpapers.remove(&old_path);
+            tokio::fs::remove_file(&paths[0]).await?;
+
             wallpapers.insert(new_path);
 
             return Ok(());
         }
         notify::EventKind::Remove(notify::event::RemoveKind::File) => {
-            // TODO: clear cache
             paths
                 .into_iter()
-                .filter_map(|entry| get_name(Some(&entry), "remove path").ok())
+                .filter_map(|entry| {
+                    info!(file = entry.to_string_lossy().into_owned(), "removing file");
+                    std::fs::remove_file(&entry).ok()?;
+                    get_name(Some(&entry), "remove path").ok()
+                })
                 .for_each(|name| {
                     wallpapers.remove(&name);
                 });
@@ -90,6 +99,12 @@ pub async fn handle_event(
 
 pub struct WallpaperSetter(Xlib);
 
+impl fmt::Debug for WallpaperSetter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "wallpaper setter with Xlib client")
+    }
+}
+
 impl WallpaperSetter {
     pub fn new() -> Self {
         Self(Xlib::new().expect("could not create xlib client"))
@@ -100,14 +115,17 @@ impl WallpaperSetter {
         Ok(())
     }
 
+    #[tracing::instrument]
     pub async fn set_many(
         &self,
-        paths: impl Iterator<Item = PathBuf>,
+        paths: impl Iterator<Item = PathBuf> + std::fmt::Debug,
         fps: u16,
     ) -> anyhow::Result<()> {
         // TODO: calculate time taken to set the wallpaper and subtract it from timeout
         let timeout_in_milliseconds = (1000f32 / fps as f32).floor() as u64;
         let mut interval = time::interval(Duration::from_millis(timeout_in_milliseconds));
+
+        info!("setting new wallpapers");
 
         for path in paths {
             interval.tick().await;

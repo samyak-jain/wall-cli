@@ -1,5 +1,5 @@
 [package]
-name = "wallpaper-fade"
+name = "wall-cli"
 version = "0.1.0"
 edition = "2021"
 
@@ -17,3 +17,7 @@ image-transitions = "0.1.1"
 image = "0.24.3"
 pin-utils = "0.1.0"
 wall = "0.2.3"
+rayon = "1.5.3"
+tracing = "0.1.36"
+tracing-subscriber = "0.3.15"
+tracing-appender = "0.2.2"

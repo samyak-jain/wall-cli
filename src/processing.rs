@@ -1,108 +1,142 @@
 use std::{path::PathBuf, sync::Arc};
 
-use crate::{
-    cache::{save_cache, WallpaperCache},
-    wallpaper::WallpaperData,
-};
-use image::{
-    codecs::png::PngEncoder, io::Reader as ImageReader, load_from_memory, ImageBuffer,
-    ImageEncoder, RgbImage,
-};
+use crate::{cache::WallpaperCache, wallpaper::WallpaperData, WallpaperImage};
+use anyhow::{bail, Ok};
+use image::{io::Reader as ImageReader, ImageBuffer};
 use image_transitions::cross_fade;
+use rayon::{
+    iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator},
+    slice::ParallelSlice,
+};
+use tracing::{debug, error, info};
 
+// Resize all images in the wallpaper_directory into the provided resolution in parallel
+#[tracing::instrument]
 pub async fn resize_images(
     wallpapers: Arc<WallpaperData>,
     wallpaper_dir: &PathBuf,
-    data_dir: &PathBuf,
+    dest_dir: &PathBuf,
     resolution: (u32, u32),
 ) -> anyhow::Result<()> {
     let image_names = wallpapers.get_all();
-    for image_name in image_names {
-        let mut image_path = wallpaper_dir.clone();
-        image_path.push(&image_name);
 
-        let mut dest_image_path = data_dir.clone();
-        dest_image_path.push(image_name);
+    image_names
+        .par_iter()
+        .try_for_each(|image_name| -> anyhow::Result<()> {
+            let image_path = wallpaper_dir.join(image_name);
+            let dest_image_path = dest_dir.join(image_name);
 
-        if dest_image_path.exists() {
-            continue;
-        }
+            if dest_image_path.exists() {
+                return Ok(());
+            }
 
-        let image = ImageReader::open(image_path)?.decode()?;
-        let new_image = image.resize_to_fill(
-            resolution.0,
-            resolution.1,
-            image::imageops::FilterType::Lanczos3,
-        );
+            debug!(image_name = image_name, "resizing image");
 
-        new_image.save(dest_image_path)?;
-    }
+            let image = ImageReader::open(image_path)?.decode()?;
+            let new_image = image.resize_to_fill(
+                resolution.0,
+                resolution.1,
+                image::imageops::FilterType::Lanczos3,
+            );
+
+            new_image.save(dest_image_path)?;
+
+            Ok(())
+        })?;
 
     Ok(())
 }
 
+// Generate intermediate images for the cross fade animation and store it in the cache folder
+#[tracing::instrument]
 pub async fn generate_intermediate_wallpapers(
     wallpaper_windows: &WallpaperCache,
     wallpaper_dir: &PathBuf,
     cache_dir: &PathBuf,
     iterations: usize,
+    resolution: (u32, u32),
 ) -> anyhow::Result<()> {
-    for (first_wallpaper, second_wallpaper) in wallpaper_windows.iter() {
-        let mut cache_path = cache_dir.clone();
-        cache_path.push(format!("{}_{}", first_wallpaper, second_wallpaper));
+    wallpaper_windows
+        .par_iter()
+        .try_for_each(|(first_wallpaper, second_wallpaper)| {
+            let cache_path = cache_dir.join(format!(
+                "{}_{}",
+                PathBuf::from(first_wallpaper)
+                    .file_stem()
+                    .ok_or(anyhow::anyhow!("cannot get file stem for wallpaper path"))?
+                    .to_string_lossy(),
+                PathBuf::from(second_wallpaper)
+                    .file_stem()
+                    .ok_or(anyhow::anyhow!("cannot get file stem for wallpaper path"))?
+                    .to_string_lossy()
+            ));
 
-        if cache_path.exists() {
-            continue;
-        }
+            if cache_path.exists() {
+                return Ok(());
+            }
 
-        let mut first_file_path = wallpaper_dir.clone();
-        first_file_path.push(first_wallpaper);
+            info!(
+                generate_directory = cache_path.to_string_lossy().into_owned(),
+                "generating wallpapers"
+            );
 
-        dbg!(first_file_path.display());
+            let first_file_path = wallpaper_dir.join(first_wallpaper);
+            let second_file_path = wallpaper_dir.join(second_wallpaper);
 
-        let mut second_file_path = wallpaper_dir.clone();
-        second_file_path.push(second_wallpaper);
+            let first_image = ImageReader::open(&first_file_path)?.decode()?.into_rgb8();
+            let second_image = ImageReader::open(&second_file_path)?.decode()?.into_rgb8();
 
-        dbg!(second_file_path.display());
+            let width = resolution.0;
+            let height = resolution.1;
 
-        let first_image = ImageReader::open(first_file_path)?.decode()?.into_rgb8();
-        let second_image = ImageReader::open(second_file_path)?.decode()?.into_rgb8();
+            if first_image.dimensions() != resolution {
+                error!(
+                    image_resolution = format!("{:#?}", first_image.dimensions()),
+                    file_path = first_file_path.to_string_lossy().into_owned(),
+                    "dimension mismatch"
+                );
+                bail!("first image resolution not matching");
+            }
 
-        let width = first_image.width();
-        let height = first_image.height();
+            if second_image.dimensions() != resolution {
+                error!(
+                    image_resolution = format!("{:#?}", second_image.dimensions()),
+                    file_path = second_file_path.to_string_lossy().into_owned(),
+                    "dimension mismatch"
+                );
+                bail!("first image resolution not matching");
+            }
 
-        dbg!(width, height);
+            let first_image_raw = first_image.as_flat_samples();
+            let second_image_raw = second_image.as_flat_samples();
 
-        let first_image_raw = first_image.as_flat_samples();
-        let second_image_raw = second_image.as_flat_samples();
+            let output_buffer = cross_fade(
+                &first_image_raw.samples,
+                &second_image_raw.samples,
+                iterations,
+            )?;
+            let split_buffer = output_buffer.par_chunks_exact(first_image_raw.samples.len());
 
-        let output_buffer = cross_fade(
-            &first_image_raw.samples,
-            &second_image_raw.samples,
-            iterations,
-        )?;
-        let split_buffer = output_buffer.chunks_exact(first_image_raw.samples.len());
+            std::fs::create_dir(&cache_path)?;
 
-        tokio::fs::create_dir(&cache_path).await?;
+            split_buffer
+                .map(|raw_output| -> WallpaperImage {
+                    ImageBuffer::from_raw(width, height, raw_output)
+                        .expect("container not large enough")
+                })
+                .enumerate()
+                .try_for_each(|(index, image)| -> anyhow::Result<()> {
+                    let file_path = cache_path.join(format!("{}.png", index));
+                    debug!(
+                        file = file_path.to_string_lossy().into_owned(),
+                        "saving cross fade file"
+                    );
+                    image.save(file_path)?;
+                    Ok(())
+                })?;
 
-        let intermediate_image = split_buffer.map(|raw_output| {
-            ImageBuffer::from_raw(width, height, raw_output).expect("container not large enough")
-            // let img = RgbImage::new(width, height);
-            // let mut img_flat_buffer = img.as_flat_samples();
-            // img_flat_buffer.samples = raw_output;
-            // // img_flat_buffer.try_into_buffer::<image::Rgb<u8>>().unwrap();
-            // img
-        });
-
-        save_cache(cache_path, intermediate_image).await?;
-
-        // let images = split_buffer.for_each(|raw_output| {
-        //     // TODO: possible remove this allocation
-        //     // load_from_memory(&filebuffer).unwrap().to_rgba8()
-        // });
-        //
-        //save_cache(cache_path, images).await?;
-    }
+            Ok(())
+        })?;
 
     Ok(())
 }

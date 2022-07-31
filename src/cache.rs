@@ -1,11 +1,11 @@
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::bail;
+use tracing::info;
 
 use crate::{
     filesystem::read_images_from_directory,
     wallpaper::{WallpaperData, WallpaperSetter},
-    WallpaperImage,
 };
 
 #[derive(Debug)]
@@ -44,15 +44,29 @@ impl WallpaperCache {
         }
     }
 
+    #[tracing::instrument]
     pub async fn set_wallpapers(&self, cache_dir: &PathBuf, fps: u16) -> anyhow::Result<()> {
         for pair in &self.wallpaper_pairs {
-            let folder_name = format!("{}_{}", pair.0, pair.1);
-            let mut folder_path = cache_dir.clone();
-            folder_path.push(folder_name);
+            let folder_path = cache_dir.join(format!(
+                "{}_{}",
+                PathBuf::from(&pair.0)
+                    .file_stem()
+                    .ok_or(anyhow::anyhow!("cannot get file stem for wallpaper path"))?
+                    .to_string_lossy(),
+                PathBuf::from(&pair.1)
+                    .file_stem()
+                    .ok_or(anyhow::anyhow!("cannot get file stem for wallpaper path"))?
+                    .to_string_lossy()
+            ));
 
             if !folder_path.exists() {
                 bail!("cache folder {} does not exist", folder_path.display());
             }
+
+            info!(
+                image_dir = folder_path.to_string_lossy().into_owned(),
+                "setting wallpaper from image directory"
+            );
 
             let wallpaper_setter = WallpaperSetter::new();
             wallpaper_setter
@@ -62,23 +76,4 @@ impl WallpaperCache {
 
         Ok(())
     }
-}
-
-pub async fn save_cache(
-    folder_path: PathBuf,
-    images: impl Iterator<Item = WallpaperImage<'_>>,
-) -> anyhow::Result<()> {
-    if !folder_path.exists() {
-        tokio::fs::create_dir(&folder_path).await?;
-    }
-
-    for (index, file) in images.enumerate() {
-        let mut file_path = folder_path.clone();
-        // TODO: How to handle file extensions?
-        file_path.push(index.to_string());
-
-        file.save(file_path)?;
-    }
-
-    Ok(())
 }
