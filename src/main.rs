@@ -62,10 +62,10 @@ struct Args {
     #[clap(short, long, value_parser, default_value_t = 5)]
     transition_time: u8,
 
-    #[clap(short, long, value_enum, default_value_t = LogMode::File)]
+    #[clap(long, value_enum, default_value_t = LogMode::File)]
     log_mode: LogMode,
 
-    #[clap(short, long, value_enum, default_value_t = LogLevel::Info)]
+    #[clap(long, value_enum, default_value_t = LogLevel::Info)]
     level: LogLevel,
 }
 
@@ -156,21 +156,21 @@ async fn main() {
     .await
     .expect("unable to resize images");
 
-    if let Err(error) = generate_intermediate_wallpapers(
-        &wallpaper_cache,
-        &resized_image_dir,
-        &generate_image_dir,
-        iterations as usize,
-        resolution,
-    )
-    .await
-    {
-        let stderror: &(dyn std::error::Error) = error.as_ref();
-        error!(
-            error = stderror,
-            "unable to generate intermediate wallpapers"
-        );
-    };
+    // if let Err(error) = generate_intermediate_wallpapers(
+    //     &wallpaper_cache,
+    //     &resized_image_dir,
+    //     &generate_image_dir,
+    //     iterations as usize,
+    //     resolution,
+    // )
+    // .await
+    // {
+    //     let stderror: &(dyn std::error::Error) = error.as_ref();
+    //     error!(
+    //         error = stderror,
+    //         "unable to generate intermediate wallpapers"
+    //     );
+    // };
 
     loop {
         tokio::select! {

@@ -57,7 +57,7 @@ pub async fn generate_intermediate_wallpapers(
     resolution: (u32, u32),
 ) -> anyhow::Result<()> {
     wallpaper_windows
-        .par_iter()
+        .iter()
         .try_for_each(|(first_wallpaper, second_wallpaper)| {
             let cache_path = cache_dir.join(format!(
                 "{}_{}",
@@ -132,6 +132,7 @@ pub async fn generate_intermediate_wallpapers(
                         "saving cross fade file"
                     );
                     image.save(file_path)?;
+                    drop(image);
                     Ok(())
                 })?;
 
