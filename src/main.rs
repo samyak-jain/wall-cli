@@ -1,25 +1,28 @@
-use cache::WallpaperCache;
 use clap::Parser;
 use filesystem::{read_directory, validate_directory, watch_dir_changes};
-use image::ImageBuffer;
+use gstreamer::{BufferList, MessageView};
+use tracing::info;
 use tracing::metadata::LevelFilter;
-use tracing::{error, info};
 use wallpaper::handle_event;
-use wallpaper::WallpaperData;
 
-use std::path::PathBuf;
 use std::sync::Arc;
+use std::{path::PathBuf, rc::Rc};
+
 use std::time::Duration;
 
 use tokio::time;
 
-use crate::processing::generate_intermediate_wallpapers;
-use crate::processing::resize_images;
+use crate::{
+    processing::{generate_intermediate_wallpapers, resize_images},
+    video::Pipeline,
+    window::XConnection,
+};
 
-mod cache;
 mod filesystem;
 mod processing;
+mod video;
 mod wallpaper;
+mod window;
 
 #[derive(clap::ValueEnum, Clone, Debug)]
 enum LogMode {
@@ -60,7 +63,10 @@ struct Args {
     fps: u16,
 
     #[clap(short, long, value_parser, default_value_t = 5)]
-    transition_time: u8,
+    transition_duration_seconds: u8,
+
+    #[clap(short, long, value_parser, default_value_t = 60)]
+    seconds_between_transition: u8,
 
     #[clap(long, value_enum, default_value_t = LogMode::File)]
     log_mode: LogMode,
@@ -70,7 +76,6 @@ struct Args {
 }
 
 type StreamEvent = notify::Result<notify::event::Event>;
-type WallpaperImage<'a> = ImageBuffer<image::Rgb<u8>, &'a [u8]>;
 
 #[tokio::main]
 #[tracing::instrument]
@@ -125,68 +130,76 @@ async fn main() {
         "config variables"
     );
 
-    let wallpapers = Arc::new(
-        read_directory(&args.wallpaper_dir, resolution)
-            .await
-            .expect("could not read the wallpaper directory"),
-    );
+    let mut wallpapers = read_directory(&args.wallpaper_dir, resolution)
+        .await
+        .expect("could not read the wallpaper directory");
+
+    info!("loading gstreamer");
+    gstreamer::init().expect("unable to init gstreamer");
+
+    info!("starting X server connection");
+    let connection = XConnection::new();
 
     let mut wallpaper_dir_changes = watch_dir_changes(&args.wallpaper_dir)
-        .await
         .expect("could not watch for changes in the wallpaper directoy");
 
     info!("started watching wallpaper directory");
 
-    let mut interval = time::interval(Duration::from_secs(args.transition_time.into()));
-
-    let iterations = args.fps * u16::from(args.transition_time);
+    let iterations = args.fps * u16::from(args.transition_duration_seconds);
     info!(
         iterations = iterations,
         "calculated number of itermediate wallpapers for each pair"
     );
 
-    let wallpaper_cache = WallpaperCache::new(wallpapers.clone());
+    let window_id = connection.create_window().expect("could not create window");
+    let mut pipeline = Pipeline::new(window_id, resolution, args.fps)
+        .expect("could not create gstreamer pipeline");
 
-    resize_images(
-        wallpapers.clone(),
-        &args.wallpaper_dir,
-        &resized_image_dir,
-        resolution,
-    )
-    .await
-    .expect("unable to resize images");
+    resize_images(&wallpapers, &resized_image_dir, resolution).expect("unable to resize images");
 
-    // if let Err(error) = generate_intermediate_wallpapers(
-    //     &wallpaper_cache,
-    //     &resized_image_dir,
-    //     &generate_image_dir,
-    //     iterations as usize,
-    //     resolution,
-    // )
-    // .await
-    // {
-    //     let stderror: &(dyn std::error::Error) = error.as_ref();
-    //     error!(
-    //         error = stderror,
-    //         "unable to generate intermediate wallpapers"
-    //     );
-    // };
+    let mut interval = time::interval(Duration::from_secs(args.seconds_between_transition.into()));
+    let mut current_wallpaper_index = 0;
 
     loop {
         tokio::select! {
             Some(event_result) = wallpaper_dir_changes.recv() => {
-                handle_event(wallpapers.clone(), event_result).await.expect("could not handle file event");
-                resize_images(wallpapers.clone(), &args.wallpaper_dir, &resized_image_dir, resolution).await.expect("unable to resize images");
-                if let Err(error) = generate_intermediate_wallpapers(&wallpaper_cache, &resized_image_dir, &generate_image_dir, iterations as usize, resolution).await {
-                    let stderror: &(dyn std::error::Error) = error.as_ref();
-                    error!(error = stderror, "unable to generate intermediate wallpapers");
-                };
+                handle_event(&mut wallpapers, event_result).await.expect("could not handle file event");
+                resize_images(&wallpapers, &resized_image_dir, resolution).expect("unable to resize images");
             }
             _ = interval.tick() => {
-                if let Err(error) = wallpaper_cache.set_wallpapers(&generate_image_dir, args.fps).await {
-                    let stderror: &(dyn std::error::Error) = error.as_ref();
-                    error!(error = stderror, "unable to set wallpaper");
-                };
+                let (intermediate_buffer, image_len) = generate_intermediate_wallpapers(
+                    &wallpapers[current_wallpaper_index % wallpapers.len()],
+                    &wallpapers[(current_wallpaper_index + 1) % wallpapers.len()],
+                    iterations,
+                    resolution,
+                )
+                .expect("could not generate intermediate buffer");
+
+                let pipeline_buffer = Arc::new(BufferList::from_iter(
+                    Box::leak(intermediate_buffer.into_boxed_slice())
+                        .chunks_exact(image_len)
+                        .map(|buf| gstreamer::buffer::Buffer::from_slice(buf)),
+                ));
+
+                let weak_buffer = Arc::downgrade(&pipeline_buffer);
+
+                // pipeline.push_frames(unsafe { BufferList::from_glib_full(pipeline_buffer.as_ptr()) }).expect("could not push frames to pipeline");
+                pipeline.push_frames(pipeline_buffer).expect("could not push frames to pipeline");
+                pipeline.frames_consumed(move |_, _| {
+                    match weak_buffer.upgrade() {
+                        Some(upgraded_buffer) => drop(upgraded_buffer),
+                        None => {},
+                    };
+                });
+
+                current_wallpaper_index += 1;
+            }
+            Some(msg) = pipeline.events() => {
+                match msg.view() {
+                    MessageView::Eos(..) => {},
+                    MessageView::Error(err) => {},
+                    _ => {}
+                }
             }
         }
     }

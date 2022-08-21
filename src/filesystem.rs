@@ -1,7 +1,8 @@
-use crate::{StreamEvent, WallpaperData};
+use crate::StreamEvent;
 use anyhow::bail;
 use notify::{RecommendedWatcher, Watcher};
-use std::{collections::BTreeSet, path::PathBuf};
+use rand::prelude::SliceRandom;
+use std::path::PathBuf;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio_stream::{wrappers::ReadDirStream, StreamExt};
 use tracing::{debug, info};
@@ -10,63 +11,51 @@ use tracing::{debug, info};
 pub async fn read_directory(
     directory: &PathBuf,
     resolution: (u32, u32),
-) -> anyhow::Result<WallpaperData> {
+) -> anyhow::Result<Vec<PathBuf>> {
     if !directory.is_dir() {
         bail!("wallpaper_dir is supposed to be a directory")
     }
 
-    let mut wallpapers = BTreeSet::new();
+    info!(
+        wallpaper_dir = directory.to_string_lossy().into_owned(),
+        "reading wallpapers"
+    );
+
     let mut file_list = ReadDirStream::new(tokio::fs::read_dir(directory).await?);
+    let mut files = Vec::new();
 
     while let Some(Ok(file)) = file_list.next().await {
         if file.file_type().await?.is_dir() {
             continue;
         }
 
-        let file_name = file
-            .file_name()
-            .into_string()
-            .map_err(|err| anyhow::anyhow!("could not covert file name to string: {:?}", err))?;
+        let path = file.path();
 
-        let image_dimensions = image::io::Reader::open(file.path())?.into_dimensions()?;
+        let image_dimensions = image::io::Reader::open(&path)?.into_dimensions()?;
         if image_dimensions < resolution {
             info!(
-                file_name = file_name,
-                dimensions = format!("{:?}", image_dimensions),
+                file_path = format!("{:#?}", path),
+                dimensions = format!("{:#?}", image_dimensions),
                 "skipping file because dimensions too small"
             );
             continue;
         }
 
-        wallpapers.insert(file_name);
+        files.push(path);
     }
 
+    let mut rng = rand::thread_rng();
+    files.shuffle(&mut rng);
+
     debug!(
-        wallpaper_list = format!("{:#?}", wallpapers),
+        wallpaper_list = format!("{:#?}", files),
         "list of wallpapers read from the directory"
     );
 
-    Ok(WallpaperData {
-        wallpapers: std::sync::Mutex::new(wallpapers),
-    })
+    Ok(files)
 }
 
-pub async fn read_images_from_directory(
-    directory: &PathBuf,
-) -> anyhow::Result<impl Iterator<Item = PathBuf> + std::fmt::Debug> {
-    if !directory.is_dir() {
-        bail!("invalid directory: {}, given", directory.display());
-    }
-
-    let image_list = ReadDirStream::new(tokio::fs::read_dir(directory).await?)
-        .filter_map(|entry| Some(entry.ok()?.path()))
-        .collect::<Vec<_>>()
-        .await;
-
-    Ok(image_list.into_iter())
-}
-
-pub async fn watch_dir_changes(
+pub fn watch_dir_changes(
     directory: &PathBuf,
 ) -> anyhow::Result<tokio::sync::mpsc::UnboundedReceiver<StreamEvent>> {
     if !directory.is_dir() {
