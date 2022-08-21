@@ -1,12 +1,9 @@
-use std::{mem, path::PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{bail, Ok};
-use image::{io::Reader as ImageReader, ImageBuffer};
+use image::io::Reader as ImageReader;
 use image_transitions::cross_fade;
-use rayon::{
-    iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator},
-    slice::ParallelSlice,
-};
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use tracing::{debug, error, info};
 
 // Resize all images in the wallpaper_directory into the provided resolution in parallel
@@ -15,6 +12,8 @@ pub fn resize_images(
     dest_dir: &PathBuf,
     resolution: (u32, u32),
 ) -> anyhow::Result<()> {
+    info!("starting to resize image");
+
     wallpapers
         .par_iter()
         .try_for_each(|image_path| -> anyhow::Result<()> {
@@ -25,10 +24,14 @@ pub fn resize_images(
 
             let dest_image_path = dest_dir.join(image_name);
             if dest_image_path.exists() {
+                debug!(
+                    image = dest_image_path.to_string_lossy().into_owned(),
+                    "image already resized"
+                );
                 return Ok(());
             }
 
-            debug!(
+            info!(
                 image_name = image_name.to_string_lossy().into_owned(),
                 "resizing image"
             );
@@ -44,6 +47,8 @@ pub fn resize_images(
 
             Ok(())
         })?;
+
+    info!("images resized");
 
     Ok(())
 }

@@ -1,13 +1,12 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use gstreamer::{
-    bus::BusStream,
     prelude::{Cast, GstBinExtManual},
     traits::ElementExt,
     BufferList,
 };
-use gstreamer_app::AppSrc;
 use gstreamer_player::prelude::VideoOverlayExtManual;
+use gstreamer_video::VideoInfo;
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 
 pub struct Pipeline {
@@ -15,6 +14,7 @@ pub struct Pipeline {
     source: gstreamer_app::AppSrc,
     status: gstreamer::State,
     rx: UnboundedReceiver<gstreamer::Message>,
+    pub video_info: VideoInfo,
 }
 
 impl Pipeline {
@@ -66,15 +66,12 @@ impl Pipeline {
             source,
             status: gstreamer::State::Ready,
             rx,
+            video_info,
         })
     }
 
-    pub fn push_frames(&mut self, buffer: Arc<BufferList>) -> anyhow::Result<()> {
-        self.source.push_buffer_list(
-            Arc::try_unwrap(buffer)
-                .map_err(|_| anyhow::anyhow!("could not get access to buffer"))?,
-        )?;
-
+    pub fn push_frames(&mut self, buffer: BufferList) -> anyhow::Result<()> {
+        self.source.push_buffer_list(buffer)?;
         if self.status != gstreamer::State::Playing {
             self.pipeline.set_state(gstreamer::State::Playing)?;
             self.status = gstreamer::State::Playing;
@@ -85,13 +82,5 @@ impl Pipeline {
 
     pub async fn events(&mut self) -> Option<gstreamer::Message> {
         self.rx.recv().await
-    }
-
-    pub fn frames_consumed(&self, callback: impl FnMut(&AppSrc, u32) + Send + 'static) {
-        self.source.set_callbacks(
-            gstreamer_app::AppSrcCallbacks::builder()
-                .need_data(callback)
-                .build(),
-        );
     }
 }

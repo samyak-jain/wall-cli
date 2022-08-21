@@ -1,3 +1,4 @@
+use tracing::info;
 use x11rb::{
     connection::Connection,
     protocol::xproto::{
@@ -23,6 +24,8 @@ impl XConnection {
     }
 
     pub fn create_window(&self) -> anyhow::Result<usize> {
+        info!("creating window");
+
         let screen = &self.connection.setup().roots[self.screen_num];
         let win_id = self.connection.generate_id().unwrap();
         let gc_id = self.connection.generate_id().unwrap();
@@ -77,6 +80,8 @@ impl XConnection {
         self.connection.map_window(win_id)?;
         self.connection.flush()?;
         self.connection.sync()?;
+
+        info!(window_id = win_id.to_string(), "created window");
 
         Ok(win_id.try_into()?)
     }
